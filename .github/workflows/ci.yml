@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Network-emulation e2e scenarios (#610) are slow, so they run nightly
+    # rather than on every PR. See the `e2e-network` job below.
+    - cron: '0 3 * * *'
 
 env:
   # Dummy, non-secret values so lib/env.ts's zod validation passes at build
@@ -134,5 +138,42 @@ jobs:
         if: failure()
         with:
           name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  # Network-emulation scenarios (#610) throttle bandwidth/latency via CDP
+  # (`Network.emulateNetworkConditions`) and flap connectivity, so they are
+  # slower and flakier than the fast-CI e2e job above. They run nightly (and
+  # on demand) rather than on every PR. Chromium only: CDP is required, so
+  # Firefox/WebKit are intentionally excluded here.
+  e2e-network:
+    name: End-to-end tests (Playwright, emulated 2G/3G)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0
+      SUPABASE_SERVICE_ROLE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU
+      STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+      SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+      LAFIYA_DEPLOYMENT_ENV: ci
+      ATTESTATION_MODE: mock
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3
+      - run: supabase start
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e:network
+      - run: supabase stop
+        if: always()
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: failure()
+        with:
+          name: playwright-network-report
           path: playwright-report/
           retention-days: 7

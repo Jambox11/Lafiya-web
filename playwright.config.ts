@@ -1,5 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// Network-emulation e2e scenarios (issue #610) rely on the Chrome DevTools
+// Protocol (`Network.emulateNetworkConditions`), which is only available in
+// Chromium. Firefox and WebKit cannot throttle/flap connectivity this way, so
+// the suite intentionally runs on Chromium only.
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
@@ -30,5 +34,17 @@ export default defineConfig({
       ATTESTATION_MODE: "mock",
     },
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      // Slow, CDP-throttled scenarios (2G/3G/flapping). Kept in a separate
+      // project so CI can run them nightly instead of on every PR.
+      name: "chromium-network",
+      testMatch: /network\..*\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"] },
+    },
+  ],
 });
