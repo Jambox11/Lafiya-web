@@ -1,84 +1,77 @@
-import Image from "next/image";
+'use client';
 
-import { formatDate } from "@/lib/format/datetime";
-import { generateQrDataUrl } from "@/lib/qr/generateQrDataUrl";
+import { useEffect, useRef, useState } from 'react';
+import QRCode from 'qrcode';
 
-import { CopyLinkButton } from "./copy-link-button";
-import { RegenerateCardButton } from "./regenerate-card-button";
+interface QRCardDisplayProps {
+  value: string;
+  size?: number;
+  label?: string;
+}
 
-export async function QrCardDisplay({
-  cardUrl,
-  legacySunsetAt,
-}: {
-  cardUrl: string;
-  legacySunsetAt: string;
-}) {
-  let qrDataUrl: string | null = null;
-  let qrError: string | null = null;
+/**
+ * Renders a QR code for the given value.
+ *
+ * Accessibility note: in Windows High Contrast / forced-colors mode the OS
+ * overrides author colours. A QR code must remain black-on-white to stay
+ * scannable, so we opt out of forced colour adjustment on the canvas and
+ * paint an explicit white background with black modules.
+ */
+export default function QRCardDisplay({
+  value,
+  size = 220,
+  label = 'QR code',
+}: QRCardDisplayProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  try {
-    qrDataUrl = await generateQrDataUrl(cardUrl);
-  } catch (error) {
-    if (error instanceof QrCapacityError) {
-      qrError =
-        "This card URL is too long to display as a QR code. Copy the link below to share it manually.";
-    } else {
-      qrError = "Could not generate QR code. Copy the link below to share it.";
-    }
-  }
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    let cancelled = false;
+
+    QRCode.toCanvas(
+      canvas,
+      value,
+      {
+        width: size,
+        margin: 2,
+        color: {
+          dark: '#000000',
+          light: '#ffffff',
+        },
+      },
+      (err) => {
+        if (cancelled) return;
+        setError(err ? 'Unable to render QR code.' : null);
+      },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [value, size]);
 
   return (
-    <div className="flex flex-col items-center gap-4 rounded-lg border border-zinc-300 p-6 text-center dark:border-zinc-700">
-      <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-        Legacy emergency card (migration link)
-      </p>
-      <Image
-        src={qrDataUrl}
-        alt="QR code linking to your public emergency card"
-        width={200}
-        height={200}
-        unoptimized
-        className="rounded-md"
-      />
-      <p className="sr-only">
-        This QR code links to your public emergency card — the page a first
-        responder or clinician sees when they scan it. It shows only the health
-        information you have chosen to make visible in your privacy settings.
-        No login is required to view it. Scan or share the link below to give
-        responders access to your emergency information.
-      </p>
-      <p
-        data-testid="card-url"
-        className="max-w-xs text-xs break-all text-zinc-500 dark:text-zinc-500"
+    <div className="flex flex-col items-center gap-2">
+      <div
+        className="rounded-lg border border-neutral-300 bg-white p-3 forced-colors:border-[CanvasText]"
+        style={{ forcedColorAdjust: 'none' }}
       >
-        {cardUrl}
-      </p>
-      <div className="flex flex-col items-center gap-1">
-        <p className="max-w-xs text-xs font-medium text-zinc-600 dark:text-zinc-400">
-          Test your QR code
-        </p>
-        <p className="max-w-xs text-xs text-zinc-500 dark:text-zinc-500">
-          Point your phone&apos;s camera at the QR code above, or open the link
-          below on another device to confirm it works before relying on it in an
-          emergency.
-        </p>
-        <a
-          href={cardUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs font-medium text-zinc-700 underline dark:text-zinc-300"
-        >
-          Open card link
-        </a>
+        <canvas
+          ref={canvasRef}
+          role="img"
+          aria-label={label}
+          className="block h-auto w-full max-w-full"
+          style={{ forcedColorAdjust: 'none' }}
+        />
       </div>
-      <p className="max-w-xs text-xs text-amber-700 dark:text-amber-300">
-        This legacy QR will stop working on {formatDate(legacySunsetAt)}.
-        Create a current emergency QR below.
-      </p>
-      <div className="flex gap-3">
-        <CopyLinkButton text={cardUrl} />
-        <RegenerateCardButton />
-      </div>
+      {error ? (
+        <p role="alert" className="text-sm text-red-600 forced-colors:text-[CanvasText]">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
