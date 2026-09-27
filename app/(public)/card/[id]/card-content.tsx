@@ -6,6 +6,7 @@ import { OfflineEnvelopeSource } from "@/lib/emergency/offline-source";
 import type { EmergencyCardRow } from "@/lib/supabase/types";
 
 import { VerifiedBadge, type VerificationStatus } from "./verified-badge";
+import { ReadAloud } from "./read-aloud";
 
 /** Issue #596: label locale negotiated from Accept-Language, overridable
  * via a no-JS link that persists the choice in a cookie. */
@@ -162,6 +163,31 @@ function CardField({
   );
 }
 
+/** Issue #599: build the spoken script in a clinically sensible priority
+ * order. Labels come from the negotiated glossary; patient free text is
+ * spoken verbatim and never translated. */
+function buildSpokenFields(
+  card: EmergencyCardRow,
+  t: Record<string, string>,
+): { label: string; value: string }[] {
+  return [
+    { label: t.bloodGroup, value: card.blood_group ?? t.noneRecorded },
+    { label: t.genotype, value: card.genotype ?? t.noneRecorded },
+    { label: t.allergies, value: formatList(card.allergies, t) },
+    { label: t.medications, value: formatList(card.medications, t) },
+    { label: t.conditions, value: formatList(card.conditions, t) },
+    {
+      label: t.contacts,
+      value:
+        card.emergency_contacts && card.emergency_contacts.length > 0
+          ? card.emergency_contacts
+              .map((c) => `${c.name} ${c.phone}`)
+              .join(", ")
+          : t.noneRecorded,
+    },
+  ];
+}
+
 export function EmergencyCardContent({
   card,
   authorizationKind,
@@ -233,6 +259,13 @@ export function EmergencyCardContent({
             </Link>
           ))}
         </nav>
+        {/* Issue #599: hands-free read-aloud of the critical fields. */}
+        <ReadAloud
+          fields={buildSpokenFields(card, t)}
+          locale={locale}
+          patientLang={patientLang}
+        />
+        <VerifiedBadge status={status} />
       </main>
     </>
   );
