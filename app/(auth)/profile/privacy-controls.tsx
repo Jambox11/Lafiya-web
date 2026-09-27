@@ -23,6 +23,29 @@ const disclosureFields = [
   "language",
 ] as const;
 
+// Clinically reviewed wording. Each clinical fact is disclosed only when the
+// patient explicitly opts in; the default is not disclosed.
+const clinicalDisclosureFields = [
+  {
+    field: "advance_directives",
+    label: "Advance directives or DNR status",
+    description:
+      "Resuscitation preferences and any advance directive document reference. Legal status varies by jurisdiction; this is not a substitute for a valid legal document.",
+  },
+  {
+    field: "implanted_devices",
+    label: "Implanted devices",
+    description:
+      "Pacemaker, ICD, or other implanted device, including MRI safety implications.",
+  },
+  {
+    field: "transfusion_restrictions",
+    label: "Blood-product restrictions",
+    description:
+      "Refusal of transfusion or other blood-product restrictions.",
+  },
+] as const;
+
 export function PrivacyControls({
   revisionId,
   policy,
@@ -101,6 +124,36 @@ export function PrivacyControls({
                   className="focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 dark:focus:ring-zinc-600"
                 />
                 <span>{field.replaceAll("_", " ")}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend className="font-medium">
+            Clinical disclosures (default: not disclosed)
+          </legend>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            These facts change emergency care. They are shown on the public card
+            only when you explicitly allow disclosure. Wording has been
+            clinically reviewed; advance directives are not a substitute for a
+            valid legal document.
+          </p>
+          <div className="mt-2 flex flex-col gap-3">
+            {clinicalDisclosureFields.map(({ field, label, description }) => (
+              <label key={field} className="flex gap-2">
+                <input
+                  type="checkbox"
+                  name={`field:${field}`}
+                  defaultChecked={policy.fields[field] ?? false}
+                  data-testid={`disclosure-${field}`}
+                  className="mt-1 focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 dark:focus:ring-zinc-600"
+                />
+                <span>
+                  <span className="font-medium">{label}</span>
+                  <span className="block text-sm text-zinc-600 dark:text-zinc-400">
+                    {description}
+                  </span>
+                </span>
               </label>
             ))}
           </div>
