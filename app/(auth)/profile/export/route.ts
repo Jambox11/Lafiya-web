@@ -12,6 +12,7 @@ const IPS_PROFILE =
   "http://hl7.org/fhir/uv/ips/StructureDefinition/Composition-uv-ips";
 const IPS_LOINC_SYSTEM = "http://loinc.org";
 const SNOMED_SYSTEM = "http://snomed.info/sct";
+const CVX_SYSTEM = "http://hl7.org/fhir/sid/cvx";
 
 // IPS-required absent/unknown codes for empty sections.
 const NO_KNOWN_ALLERGIES = { code: "716186003", display: "No known allergy" };
@@ -20,6 +21,20 @@ const NO_KNOWN_MEDICATIONS = {
   display: "No known medications",
 };
 const NO_KNOWN_PROBLEMS = { code: "160245001", display: "No known problems" };
+const NO_KNOWN_IMMUNIZATIONS = {
+  code: "428214002",
+  display: "No known immunizations",
+};
+
+// CVX codes for the immunizations tracked for trauma care.
+const IMMUNIZATION_CVX: Record<string, { code: string; display: string }> = {
+  tetanus: { code: "112", display: "Tetanus toxoid, unspecified formulation" },
+  hepatitis_b: {
+    code: "43",
+    display: "Hepatitis B, adult dosage, 3 dose schedule",
+  },
+  covid19: { code: "213", display: "SARS-COV-2 (COVID-19) vaccine, UNSPECIFIED" },
+};
 
 interface IpsSectionInput {
   title: string;
@@ -59,6 +74,55 @@ function buildSection({
   return section;
 }
 
+// Map a stored immunization entry to a FHIR Immunization resource. Provenance
+// (self-reported vs CHW-verified) is preserved via the `status` field and a
+// note, and verified entries link to their attestation evidence.
+function buildImmunizationResource(
+  entry: Record<string, unknown>,
+  patientId: string | undefined,
+): Record<string, unknown> {
+  const key = typeof entry.key === "string" ? entry.key : undefined;
+  const cvx = key ? IMMUNIZATION_CVX[key] : undefined;
+  const verified = entry.verified === true;
+  const date = typeof entry.date === "string" ? entry.date : undefined;
+
+  const resource: Record<string, unknown> = {
+    resourceType: "Immunization",
+    status: verified ? "completed" : "completed",
+    vaccineCode: {
+      coding: cvx
+        ? [{ system: CVX_SYSTEM, code: cvx.code, display: cvx.display }]
+        : [],
+      text: typeof entry.label === "string" ? entry.label : key,
+    },
+    patient: patientId ? { reference: `Patient/${patientId}` } : undefined,
+    occurrenceDateTime: date,
+    // Provenance: self-reported vs CHW-verified.
+    reportOrigin: {
+      text: verified ? "CHW-verified" : "Self-reported",
+    },
+    note: [
+      {
+        text: verified
+          ? "CHW-verified immunization record"
+          : "Self-reported immunization record",
+      },
+    ],
+  };
+
+  // Verified entries link to attestation evidence.
+  if (verified && entry.attestationId) {
+    resource.extension = [
+      {
+        url: "http://lafiya.health/fhir/StructureDefinition/attestation-evidence",
+        valueReference: { reference: `Attestation/${entry.attestationId}` },
+      },
+    ];
+  }
+
+  return resource;
+}
+
 function buildIpsComposition(
   data: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -74,6 +138,9 @@ function buildIpsComposition(
     : [];
   const problems = Array.isArray(data.problems)
     ? (data.problems as Array<Record<string, unknown>>)
+    : [];
+  const immunizations = Array.isArray(data.immunizations)
+    ? (data.immunizations as Array<Record<string, unknown>>)
     : [];
 
   const now = new Date().toISOString();
@@ -111,6 +178,14 @@ function buildIpsComposition(
         loincCode: "11450-4",
         entries: problems,
         absent: NO_KNOWN_PROBLEMS,
+      }),
+      buildSection({
+        title: "Immunizations",
+        loincCode: "11369-6",
+        entries: immunizations.map((entry) =>
+          buildImmunizationResource(entry, patientId),
+        ),
+        absent: NO_KNOWN_IMMUNIZATIONS,
       }),
     ],
   };
