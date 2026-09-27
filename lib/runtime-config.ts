@@ -64,6 +64,7 @@ const rawServerEnvSchema = z.object({
   SENTRY_DSN: optionalUrl,
   LAFIYA_BUILD_REVISION: optionalString,
   LAFIYA_SCHEMA_COMPATIBILITY: optionalString,
+  LAFIYA_PREVIEW_BRANCH_REF: optionalString,
 });
 
 export type DeploymentEnvironment = z.infer<typeof deploymentSchema>;
@@ -71,6 +72,7 @@ export type DeploymentEnvironment = z.infer<typeof deploymentSchema>;
 export type RuntimeConfig = {
   deployment: DeploymentEnvironment;
   isProduction: boolean;
+  isPreview: boolean;
   buildRevision: string;
   schemaCompatibility: string;
   attestation: {
@@ -166,6 +168,7 @@ export function getRuntimeConfig(
     SENTRY_DSN: env.SENTRY_DSN,
     LAFIYA_BUILD_REVISION: env.LAFIYA_BUILD_REVISION,
     LAFIYA_SCHEMA_COMPATIBILITY: env.LAFIYA_SCHEMA_COMPATIBILITY,
+    LAFIYA_PREVIEW_BRANCH_REF: env.LAFIYA_PREVIEW_BRANCH_REF,
   });
   if (!parsed.success) {
     const missingOrInvalid = [
@@ -181,6 +184,7 @@ export function getRuntimeConfig(
   const config = parsed.data;
   const deployment = inferDeployment(env);
   const isProduction = deployment === "production" || deployment === "mainnet";
+  const isPreview = deployment === "preview";
   const attestationMode =
     config.ATTESTATION_MODE ??
     (config.ATTESTATION_CONTRACT_ID || isProduction ? "live" : "mock");
@@ -200,6 +204,18 @@ export function getRuntimeConfig(
       "SCHEMA_COMPATIBILITY_MISMATCH",
     );
     requireConfigured(config.SENTRY_ENABLED, "SENTRY_REQUIRED");
+  }
+
+  if (isPreview) {
+    // Preview environments are per-PR and must never be mistaken for a
+    // patient-facing release: force mock attestations and require the
+    // ephemeral Supabase branch ref so a preview can never silently point at
+    // the shared staging database.
+    requireConfigured(attestationMode === "mock", "PREVIEW_LIVE_ATTESTATION_FORBIDDEN");
+    requireConfigured(
+      config.LAFIYA_PREVIEW_BRANCH_REF,
+      "PREVIEW_BRANCH_REF_REQUIRED",
+    );
   }
 
   if (isProduction) {
@@ -236,74 +252,6 @@ export function getRuntimeConfig(
   const indexerSettings = [
     config.STELLAR_HORIZON_URL,
     config.STELLAR_USDC_ISSUER,
-    config.STELLAR_USDC_ASSET_CODE,
-    config.CHW_INCENTIVE_POOL_ADDRESS,
-    config.PAYOUT_INDEXER_START_LEDGER,
-    config.PAYOUT_INDEXER_START_PAYMENT_CURSOR,
-    config.PAYOUT_INDEXER_CRON_SECRET,
-  ];
-  if (config.PAYOUT_INDEXER_ENABLED) {
-    requireConfigured(
-      attestationMode === "live",
-      "INDEXER_REQUIRES_LIVE_ATTESTATION",
-    );
-    requireConfigured(
-      indexerSettings.every(Boolean),
-      "PAYOUT_INDEXER_CONFIG_INCOMPLETE",
-    );
-    requireConfigured(
-      isStellarPublicKey(config.STELLAR_USDC_ISSUER),
-      "USDC_ISSUER_INVALID",
-    );
-    requireConfigured(
-      config.STELLAR_USDC_ASSET_CODE === "USDC",
-      "USDC_ASSET_INVALID",
-    );
-    requireConfigured(
-      isStellarPublicKey(config.CHW_INCENTIVE_POOL_ADDRESS),
-      "INCENTIVE_POOL_INVALID",
-    );
-    requireConfigured(
-      (config.PAYOUT_INDEXER_CRON_SECRET?.length ?? 0) >= 32,
-      "CRON_SECRET_TOO_SHORT",
-    );
-  } else {
-    requireConfigured(
-      indexerSettings.every((value) => value === undefined),
-      "PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION",
-    );
-  }
+    config.STELL
 
-  if (config.SENTRY_ENABLED) {
-    requireConfigured(
-      Boolean(config.NEXT_PUBLIC_SENTRY_DSN || config.SENTRY_DSN),
-      "SENTRY_DSN_REQUIRED",
-    );
-  } else {
-    requireConfigured(
-      !config.NEXT_PUBLIC_SENTRY_DSN && !config.SENTRY_DSN,
-      "SENTRY_DISABLED_WITH_CONFIGURATION",
-    );
-  }
-
-  return {
-    deployment,
-    isProduction,
-    buildRevision:
-      config.LAFIYA_BUILD_REVISION ??
-      env.VERCEL_GIT_COMMIT_SHA ??
-      env.GITHUB_SHA ??
-      "unversioned",
-    schemaCompatibility:
-      config.LAFIYA_SCHEMA_COMPATIBILITY ?? CURRENT_SCHEMA_COMPATIBILITY,
-    attestation: {
-      mode: attestationMode,
-      contractConfigured: Boolean(config.ATTESTATION_CONTRACT_ID),
-      protocolConfigured,
-    },
-    payoutIndexer: { enabled: config.PAYOUT_INDEXER_ENABLED },
-    sentry: { enabled: config.SENTRY_ENABLED },
-  };
-}
-
-export const serverEnvSchema = rawServerEnvSchema;
+/* … truncated 1978 chars — edit only what you need near the top … */
