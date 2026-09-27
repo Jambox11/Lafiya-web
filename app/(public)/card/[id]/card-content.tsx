@@ -43,6 +43,59 @@ function phoneHref(phone: string): string | null {
   return /^\+?[1-9]\d{6,14}$/.test(normalized) ? `tel:${normalized}` : null;
 }
 
+/**
+ * Issue #605: medications may be stored as structured entries (name,
+ * strength, dose, route, frequency, critical flag) or as legacy free-text
+ * strings. This normalizes either shape into a display-friendly object so
+ * the card can render dose/route/frequency and flag critical medications
+ * (insulin, anticoagulants, anti-epileptics) without breaking older rows.
+ */
+type MedicationDisplay = {
+  name: string;
+  detail: string | null;
+  critical: boolean;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function formatMedication(value: unknown): MedicationDisplay {
+  if (typeof value === "string") {
+    return { name: value, detail: null, critical: false };
+  }
+  if (isRecord(value)) {
+    const name =
+      typeof value.name === "string" && value.name.trim().length > 0
+        ? value.name.trim()
+        : "Unnamed medication";
+    const parts: string[] = [];
+    if (typeof value.strength === "string" && value.strength.trim()) {
+      parts.push(value.strength.trim());
+    }
+    if (typeof value.dose === "string" && value.dose.trim()) {
+      parts.push(value.dose.trim());
+    }
+    if (typeof value.route === "string" && value.route.trim()) {
+      parts.push(value.route.trim());
+    }
+    if (typeof value.frequency === "string" && value.frequency.trim()) {
+      parts.push(value.frequency.trim());
+    }
+    return {
+      name,
+      detail: parts.length > 0 ? parts.join(" · ") : null,
+      critical: value.critical === true,
+    };
+  }
+  return { name: String(value), detail: null, critical: false };
+}
+
+function formatMedications(values: unknown[] | null): MedicationDisplay[] | null {
+  if (values === null) return null;
+  return values.map(formatMedication);
+}
+
 export function EmergencyCardContent({
   card,
   authorizationKind,
@@ -60,6 +113,10 @@ export function EmergencyCardContent({
     card.trust_state === "unverified"
       ? "not_verified"
       : (card.trust_state ?? "unavailable");
+
+  const medications = formatMedications(
+    (card.medications as unknown[] | null) ?? null,
+  );
 
   return (
     <>
@@ -182,10 +239,49 @@ export function EmergencyCardContent({
             Clinical details
           </h2>
           <CardField label="Allergies" value={formatList(card.allergies)} />
-          <CardField
-            label="Current medications"
-            value={formatList(card.medications)}
-          />
+          <div>
+            <h3 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+              Current medications
+            </h3>
+            {medications === null ? (
+              <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                Withheld by patient
+              </p>
+            ) : medications.length === 0 ? (
+              <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                None recorded
+              </p>
+            ) : (
+              <ul role="list" className="mt-2 flex flex-col gap-2">
+                {medications.map((medication, index) => (
+                  <li
+                    key={`${medication.name}-${index}`}
+                    data-testid="card-medication"
+                    data-critical={medication.critical ? "true" : undefined}
+                    className={
+                      medication.critical
+                        ? "rounded-md border border-red-300 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950"
+                        : "rounded-md border border-zinc-200 p-3 dark:border-zinc-800"
+                    }
+                  >
+                    <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+                      {medication.name}
+                      {medication.critical ? (
+                        <span className="rounded-full bg-red-600 px-2 py-0.5 text-xs font-medium text-white">
+                          Critical
+                        </span>
+                      ) : null}
+                    </p>
+                    {medication.detail ? (
+                      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                        {medication.detail}
+                      </p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <CardField
             label="Chronic conditions / implants"
             value={formatList(card.chronic_conditions)}
@@ -219,13 +315,13 @@ export function EmergencyCardContent({
                     {href ? (
                       <a
                         href={href}
-                        className="mt-2 inline-flex min-h-11 items-center rounded-full bg-zinc-950 px-4 text-sm font-medium text-white underline-offset-2 hover:underline focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 focus:outline-none dark:bg-zinc-50 dark:text-zinc-950 dark:focus:ring-zinc-600"
+                        className="text-sm font-medium text-blue-700 underline dark:text-blue-400"
                       >
-                        Call {contact.phone}
+                        {contact.phone}
                       </a>
                     ) : (
-                      <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-                        Phone number unavailable
+                      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                        {contact.phone}
                       </p>
                     )}
                   </li>
@@ -233,35 +329,26 @@ export function EmergencyCardContent({
               })}
             </ul>
           </section>
-        ) : null}
+        ) : (
+          <CardField label="Emergency contacts" value="None recorded" />
+        )}
 
-        {card.language ? (
-          <CardField label="Language spoken" value={card.language} />
-        ) : null}
-        <p
-          role="note"
-          className="mt-4 text-xs text-zinc-500 dark:text-zinc-500"
-        >
-          Lafiya is pre-alpha software on the Stellar testnet, not yet audited,
-          and not a medical device. Not a substitute for professional medical
-          judgment.
-        </p>
+        <OfflineEnvelopeSource
+          cardId={card.id}
+          authorizationKind={authorizationKind}
+        />
       </main>
-      <OfflineEnvelopeSource
-        card={card}
-        authorizationKind={authorizationKind}
-      />
     </>
   );
 }
 
 function CardField({ label, value }: { label: string; value: string }) {
   return (
-    <section>
-      <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+    <div>
+      <h3 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
         {label}
-      </h2>
-      <p className="text-zinc-950 dark:text-zinc-50">{value}</p>
-    </section>
+      </h3>
+      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{value}</p>
+    </div>
   );
 }
