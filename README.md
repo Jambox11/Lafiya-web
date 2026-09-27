@@ -495,3 +495,8 @@ These works directly informed Lafiya's design and are the intended reading for c
 _Built for the Stellar ecosystem. Open source. Community owned._
 
 </div>
+
+## Handsoff notes
+
+<!-- handsoff-issue-608 -->
+- #608: [Spike] Evaluate importing health facts from SMART Health Cards and photographed paper records
