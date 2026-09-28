@@ -19,6 +19,13 @@ const CARD_PATH_PREFIX = "/card/";
 const PERIODIC_SYNC_TAG = "lafiya-refresh";
 const PERIODIC_SYNC_MIN_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
+// Web Push (RFC 8291) payloads are decrypted by the browser before they reach
+// this handler. Payloads must never contain PHI or capability tokens: only a
+// generic title/body plus a same-origin path to open on click.
+const PUSH_DEFAULT_TITLE = "Lafiya";
+const PUSH_DEFAULT_BODY = "You have a new notification.";
+const PUSH_DEFAULT_PATH = "/";
+
 self.addEventListener("install", () => self.skipWaiting());
 
 self.addEventListener("activate", (event) => {
@@ -52,6 +59,15 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("periodicsync", (event) => {
   if (event.tag !== PERIODIC_SYNC_TAG) return;
   event.waitUntil(refreshCachedEnvelopes());
+});
+
+self.addEventListener("push", (event) => {
+  event.waitUntil(handlePush(event));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(handleNotificationClick(event));
 });
 
 async function withCacheLock(name, fn) {
@@ -136,6 +152,74 @@ async function refreshCachedEnvelopes() {
       }
     }),
   );
+}
+
+// Only same-origin, non-card paths are opened from a notification. Card paths
+// carry capability tokens in the URL, so they are never used as a push target.
+function safeNotificationPath(rawPath) {
+  if (typeof rawPath !== "string" || rawPath.length === 0) {
+    return PUSH_DEFAULT_PATH;
+  }
+  try {
+    const url = new URL(rawPath, self.location.origin);
+    if (url.origin !== self.location.origin) return PUSH_DEFAULT_PATH;
+    if (url.pathname.startsWith(CARD_PATH_PREFIX)) return PUSH_DEFAULT_PATH;
+    return url.pathname + url.search;
+  } catch {
+    return PUSH_DEFAULT_PATH;
+  }
+}
+
+function parsePushPayload(event) {
+  if (!event.data) return {};
+  try {
+    const parsed = event.data.json();
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+async function handlePush(event) {
+  const payload = parsePushPayload(event);
+  const title =
+    typeof payload.title === "string" && payload.title.length > 0
+      ? payload.title
+      : PUSH_DEFAULT_TITLE;
+  const body =
+    typeof payload.body === "string" && payload.body.length > 0
+      ? payload.body
+      : PUSH_DEFAULT_BODY;
+  const path = safeNotificationPath(payload.path);
+
+  await self.registration.showNotification(title, {
+    body,
+    tag: typeof payload.tag === "string" ? payload.tag : undefined,
+    data: { path },
+  });
+}
+
+async function handleNotificationClick(event) {
+  const path = safeNotificationPath(
+    event.notification && event.notification.data
+      ? event.notification.data.path
+      : undefined,
+  );
+  const targetUrl = new URL(path, self.location.origin).href;
+
+  const clientList = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+  for (const client of clientList) {
+    if (client.url === targetUrl && "focus" in client) {
+      return client.focus();
+    }
+  }
+  if (self.clients.openWindow) {
+    return self.clients.openWindow(targetUrl);
+  }
 }
 
 async function handleCardNavigation(event) {

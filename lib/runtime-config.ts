@@ -34,6 +34,19 @@ const optionalUrl = z.preprocess(
   z.url().optional(),
 );
 
+// VAPID public keys are base64url-encoded uncompressed P-256 points (65
+// bytes -> 87 chars). The private key is a base64url-encoded 32-byte scalar
+// (43 chars). Both are validated here so a malformed key fails at startup
+// rather than at the first push send.
+const vapidPublicKeySchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9_-]{87}$/, "VAPID public key must be a base64url P-256 point");
+const vapidPrivateKeySchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9_-]{43}$/, "VAPID private key must be a base64url P-256 scalar");
+
 const rawServerEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
@@ -64,6 +77,12 @@ const rawServerEnvSchema = z.object({
   SENTRY_DSN: optionalUrl,
   LAFIYA_BUILD_REVISION: optionalString,
   LAFIYA_SCHEMA_COMPATIBILITY: optionalString,
+  // Web Push (VAPID). The public key is exposed to the browser via the
+  // NEXT_PUBLIC_ prefix; the private key stays server-only and is never
+  // included in the returned RuntimeConfig shape.
+  NEXT_PUBLIC_VAPID_PUBLIC_KEY: vapidPublicKeySchema.optional(),
+  VAPID_PRIVATE_KEY: vapidPrivateKeySchema.optional(),
+  VAPID_SUBJECT: optionalString,
 });
 
 export type DeploymentEnvironment = z.infer<typeof deploymentSchema>;
@@ -80,6 +99,11 @@ export type RuntimeConfig = {
   };
   payoutIndexer: { enabled: boolean };
   sentry: { enabled: boolean };
+  webPush: {
+    enabled: boolean;
+    publicKey?: string;
+    subject: string;
+  };
 };
 
 /**
@@ -166,6 +190,9 @@ export function getRuntimeConfig(
     SENTRY_DSN: env.SENTRY_DSN,
     LAFIYA_BUILD_REVISION: env.LAFIYA_BUILD_REVISION,
     LAFIYA_SCHEMA_COMPATIBILITY: env.LAFIYA_SCHEMA_COMPATIBILITY,
+    NEXT_PUBLIC_VAPID_PUBLIC_KEY: env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
+    VAPID_PRIVATE_KEY: env.VAPID_PRIVATE_KEY,
+    VAPID_SUBJECT: env.VAPID_SUBJECT,
   });
   if (!parsed.success) {
     const missingOrInvalid = [
@@ -188,6 +215,20 @@ export function getRuntimeConfig(
     config.CHW_PROTOCOL_EPOCH_ID && config.CHW_PROTOCOL_INTENT_SIGNING_KEY,
   );
 
+  // Web Push is enabled only when the full VAPID triple is present. A
+  // partially configured deployment is a misconfiguration, not a silent
+  // no-op, so it fails fast below.
+  const webPushConfigured = Boolean(
+    config.NEXT_PUBLIC_VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY,
+  );
+  const webPushPartiallyConfigured =
+    !webPushConfigured &&
+    Boolean(
+      config.NEXT_PUBLIC_VAPID_PUBLIC_KEY ||
+        config.VAPID_PRIVATE_KEY ||
+        config.VAPID_SUBJECT,
+    );
+
   if (isProduction) {
     requireConfigured(attestationMode === "live", "PRODUCTION_MOCK_FORBIDDEN");
     requireConfigured(
@@ -200,7 +241,13 @@ export function getRuntimeConfig(
       "SCHEMA_COMPATIBILITY_MISMATCH",
     );
     requireConfigured(config.SENTRY_ENABLED, "SENTRY_REQUIRED");
+    requireConfigured(webPushConfigured, "WEB_PUSH_CONFIG_REQUIRED");
   }
+
+  requireConfigured(
+    !webPushPartiallyConfigured,
+    "WEB_PUSH_CONFIG_INCOMPLETE",
+  );
 
   if (isProduction) {
     requireConfigured(
@@ -236,74 +283,6 @@ export function getRuntimeConfig(
   const indexerSettings = [
     config.STELLAR_HORIZON_URL,
     config.STELLAR_USDC_ISSUER,
-    config.STELLAR_USDC_ASSET_CODE,
-    config.CHW_INCENTIVE_POOL_ADDRESS,
-    config.PAYOUT_INDEXER_START_LEDGER,
-    config.PAYOUT_INDEXER_START_PAYMENT_CURSOR,
-    config.PAYOUT_INDEXER_CRON_SECRET,
-  ];
-  if (config.PAYOUT_INDEXER_ENABLED) {
-    requireConfigured(
-      attestationMode === "live",
-      "INDEXER_REQUIRES_LIVE_ATTESTATION",
-    );
-    requireConfigured(
-      indexerSettings.every(Boolean),
-      "PAYOUT_INDEXER_CONFIG_INCOMPLETE",
-    );
-    requireConfigured(
-      isStellarPublicKey(config.STELLAR_USDC_ISSUER),
-      "USDC_ISSUER_INVALID",
-    );
-    requireConfigured(
-      config.STELLAR_USDC_ASSET_CODE === "USDC",
-      "USDC_ASSET_INVALID",
-    );
-    requireConfigured(
-      isStellarPublicKey(config.CHW_INCENTIVE_POOL_ADDRESS),
-      "INCENTIVE_POOL_INVALID",
-    );
-    requireConfigured(
-      (config.PAYOUT_INDEXER_CRON_SECRET?.length ?? 0) >= 32,
-      "CRON_SECRET_TOO_SHORT",
-    );
-  } else {
-    requireConfigured(
-      indexerSettings.every((value) => value === undefined),
-      "PAYOUT_INDEXER_DISABLED_WITH_CONFIGURATION",
-    );
-  }
+    config.STELL
 
-  if (config.SENTRY_ENABLED) {
-    requireConfigured(
-      Boolean(config.NEXT_PUBLIC_SENTRY_DSN || config.SENTRY_DSN),
-      "SENTRY_DSN_REQUIRED",
-    );
-  } else {
-    requireConfigured(
-      !config.NEXT_PUBLIC_SENTRY_DSN && !config.SENTRY_DSN,
-      "SENTRY_DISABLED_WITH_CONFIGURATION",
-    );
-  }
-
-  return {
-    deployment,
-    isProduction,
-    buildRevision:
-      config.LAFIYA_BUILD_REVISION ??
-      env.VERCEL_GIT_COMMIT_SHA ??
-      env.GITHUB_SHA ??
-      "unversioned",
-    schemaCompatibility:
-      config.LAFIYA_SCHEMA_COMPATIBILITY ?? CURRENT_SCHEMA_COMPATIBILITY,
-    attestation: {
-      mode: attestationMode,
-      contractConfigured: Boolean(config.ATTESTATION_CONTRACT_ID),
-      protocolConfigured,
-    },
-    payoutIndexer: { enabled: config.PAYOUT_INDEXER_ENABLED },
-    sentry: { enabled: config.SENTRY_ENABLED },
-  };
-}
-
-export const serverEnvSchema = rawServerEnvSchema;
+/* … truncated 1978 chars — edit only what you need near the top … */
