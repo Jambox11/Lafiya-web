@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly drift check against the deployed testnet contract spec.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
 
 env:
   # Dummy, non-secret values so lib/env.ts's zod validation passes at build
@@ -43,6 +47,37 @@ jobs:
       - run: npm run ci:check-clean-worktree
       - name: Verify no client bundle leaks
         run: node scripts/check-client-bundles.js
+
+  contract-bindings-drift:
+    name: Contract bindings drift (Soroban spec)
+    runs-on: ubuntu-latest
+    # Runs on every PR/push and nightly against testnet. Fails when the
+    # on-chain attestation contract spec diverges from the committed
+    # bindings in lib/stellar/generated/.
+    env:
+      STELLAR_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+      SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+      ATTESTATION_CONTRACT_ID: ${{ vars.ATTESTATION_CONTRACT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install pinned Stellar CLI
+        run: |
+          curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | bash -s -- --version 22.0.1
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Regenerate bindings from on-chain spec
+        run: node scripts/gen-contract-bindings.mjs
+      - name: Fail on drift
+        run: |
+          if ! git diff --quiet -- lib/stellar/generated; then
+            echo "::error::Contract bindings are out of date. Run 'node scripts/gen-contract-bindings.mjs' and commit the result."
+            git --no-pager diff -- lib/stellar/generated
+            exit 1
+          fi
 
   integration:
     name: Integration tests (local Supabase)
