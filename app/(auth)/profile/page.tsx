@@ -23,6 +23,7 @@ import { LastChangeNotice, type RevisionSnapshot } from "./last-change-notice";
 import { ProfileForm } from "./profile-form";
 import { PrivacyControls } from "./privacy-controls";
 import { QrCardDisplay } from "./qr-card-display";
+import { OfflineStorageStatus } from "./offline-storage-status";
 
 export const metadata: Metadata = {
   title: "Your Profile · Lafiya",
@@ -210,6 +211,7 @@ export default async function ProfilePage() {
             />
           </div>
           <ProfileCompleteness profile={profile} />
+          <OfflineStorageStatus />
         </>
       ) : null}
 
@@ -226,31 +228,20 @@ export default async function ProfilePage() {
         <AttestationStatusBanner pendingRequestExists={pendingRequestExists} />
       ) : null}
 
-      {latestRevision ? (
+      {secretMissing ? <MissingSecretBanner /> : null}
+
+      {profile ? (
         <LastChangeNotice
-          latest={latestRevision}
+          latest={latestRevision ?? null}
           previous={previousRevision ?? null}
         />
       ) : null}
 
-      <ProfileForm profile={profile} userId={user.id} />
+      <ProfileForm profile={profile ?? null} />
 
-      {profile?.current_revision_id ? (
-        <PrivacyControls
-          revisionId={profile.current_revision_id}
-          policy={profile.disclosure_policy}
-          events={consentEvents ?? []}
-        />
-      ) : null}
+      <PrivacyControls consentEvents={consentEvents ?? []} />
 
-      <hr className="border-zinc-200 dark:border-zinc-800" />
-
-      <div className="flex flex-col gap-4">
-        <h2 className="text-sm font-medium text-red-600 dark:text-red-400">
-          Danger zone
-        </h2>
-        <DeleteAccountButton />
-      </div>
+      <DeleteAccountButton />
     </div>
   );
 }
