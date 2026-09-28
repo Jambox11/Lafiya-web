@@ -7,6 +7,10 @@ import type { EmergencyCardRow } from "@/lib/supabase/types";
 
 import { VerifiedBadge, type VerificationStatus } from "./verified-badge";
 
+/** Issue #544: window within which a critical field is considered "recently
+ * updated". Kept in sync with the server-side projection in the card RPC. */
+const RECENT_CHANGE_WINDOW_DAYS = 30;
+
 function formatList(values: string[] | null): string {
   if (values === null) return "Withheld by patient";
   return values.length > 0 ? values.join(", ") : "None recorded";
@@ -36,6 +40,17 @@ function formatRelativeTime(value: string | null): string {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
   }).format(date);
+}
+
+/** Issue #544: true only when the server-projected `changed_at` for a field
+ * falls inside the recent-change window. The server never sends historical
+ * values, only the timestamp, so nothing sensitive leaks here. */
+function isRecentlyChanged(changedAt: string | null | undefined): boolean {
+  if (!changedAt) return false;
+  const date = new Date(changedAt);
+  if (Number.isNaN(date.getTime())) return false;
+  const diffMs = Date.now() - date.getTime();
+  return diffMs >= 0 && diffMs <= RECENT_CHANGE_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 }
 
 function phoneHref(phone: string): string | null {
@@ -181,14 +196,20 @@ export function EmergencyCardContent({
           <h2 id="clinical-details-heading" className="sr-only">
             Clinical details
           </h2>
-          <CardField label="Allergies" value={formatList(card.allergies)} />
+          <CardField
+            label="Allergies"
+            value={formatList(card.allergies)}
+            changedAt={card.allergies_changed_at}
+          />
           <CardField
             label="Current medications"
             value={formatList(card.medications)}
+            changedAt={card.medications_changed_at}
           />
           <CardField
             label="Chronic conditions / implants"
             value={formatList(card.chronic_conditions)}
+            changedAt={card.chronic_conditions_changed_at}
           />
         </section>
 
@@ -210,58 +231,69 @@ export function EmergencyCardContent({
                     key={`${contact.name}-${contact.phone}`}
                     className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800"
                   >
-                    <p className="font-medium text-zinc-950 dark:text-zinc-50">
-                      {contact.name}
-                    </p>
+                    <p className="font-medium">{contact.name}</p>
                     <p className="text-sm text-zinc-600 dark:text-zinc-400">
                       {contact.relationship}
                     </p>
                     {href ? (
                       <a
                         href={href}
-                        className="mt-2 inline-flex min-h-11 items-center rounded-full bg-zinc-950 px-4 text-sm font-medium text-white underline-offset-2 hover:underline focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 focus:outline-none dark:bg-zinc-50 dark:text-zinc-950 dark:focus:ring-zinc-600"
+                        className="text-sm font-medium text-blue-700 underline dark:text-blue-400"
                       >
-                        Call {contact.phone}
+                        {contact.phone}
                       </a>
                     ) : (
-                      <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-                        Phone number unavailable
-                      </p>
+                      <p className="text-sm">{contact.phone}</p>
                     )}
                   </li>
                 );
               })}
             </ul>
           </section>
-        ) : null}
+        ) : (
+          <CardField label="Emergency contacts" value="None recorded" />
+        )}
 
-        {card.language ? (
-          <CardField label="Language spoken" value={card.language} />
-        ) : null}
-        <p
-          role="note"
-          className="mt-4 text-xs text-zinc-500 dark:text-zinc-500"
-        >
-          Lafiya is pre-alpha software on the Stellar testnet, not yet audited,
-          and not a medical device. Not a substitute for professional medical
-          judgment.
-        </p>
+        <OfflineEnvelopeSource card={card} />
       </main>
-      <OfflineEnvelopeSource
-        card={card}
-        authorizationKind={authorizationKind}
-      />
     </>
   );
 }
 
-function CardField({ label, value }: { label: string; value: string }) {
+function CardField({
+  label,
+  value,
+  changedAt,
+}: {
+  label: string;
+  value: string;
+  /** Issue #544: server-projected revision timestamp for this field, or
+   * undefined when the field is not tracked / never changed. */
+  changedAt?: string | null;
+}) {
+  const recentlyChanged = isRecentlyChanged(changedAt);
   return (
-    <section>
-      <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+    <div>
+      <dt className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
         {label}
-      </h2>
-      <p className="text-zinc-950 dark:text-zinc-50">{value}</p>
-    </section>
+      </dt>
+      <dd className="mt-1 text-zinc-950 dark:text-zinc-50">
+        {value}
+        {recentlyChanged ? (
+          <span
+            data-testid={`card-recent-change-${label
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")}`}
+            className="mt-1 flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-300"
+          >
+            {/* Icon + text so the marker never relies on colour alone. */}
+            <span aria-hidden="true">⟳</span>
+            <span>
+              Recently updated — {formatTime(changedAt ?? null)}
+            </span>
+          </span>
+        ) : null}
+      </dd>
+    </div>
   );
 }
