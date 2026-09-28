@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { serverEnv } from "@/lib/env-server";
 import { getRuntimeConfig } from "@/lib/runtime-config";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getFlagStates } from "@/lib/flags";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,12 +39,17 @@ async function checkStellar(): Promise<DependencyStatus> {
  * process can be alive while a dependency it needs is not safe/able to
  * receive traffic. The per-dependency breakdown lets on-call go straight to
  * the failing system instead of debugging from zero.
+ *
+ * Feature-flag state is reported at the flag level only (enabled/disabled and
+ * rollout percentage). Per-user bucketing is never exposed here, so probes
+ * cannot be used to infer which cohort a given user falls into.
  */
 export async function GET() {
   const config = getRuntimeConfig();
-  const [supabase, stellar] = await Promise.all([
+  const [supabase, stellar, flags] = await Promise.all([
     checkSupabase(),
     checkStellar(),
+    getFlagStates(),
   ]);
 
   const ready = supabase === "ok" && stellar === "ok";
@@ -62,6 +68,7 @@ export async function GET() {
         payoutIndexer: config.payoutIndexer.enabled ? "enabled" : "disabled",
         sentry: config.sentry.enabled ? "enabled" : "disabled",
       },
+      flags,
     },
     {
       status: ready ? 200 : 503,
