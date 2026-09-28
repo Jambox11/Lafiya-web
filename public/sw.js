@@ -9,6 +9,15 @@
 const CACHE_PREFIX = "lafiya-offline";
 const MANIFEST_URL = "/sw-manifest.json";
 
+// Diagnostic header value sent with navigation preload requests so the server
+// can distinguish preloaded navigations from regular fetches. It carries no
+// PHI or capability tokens.
+const NAVIGATION_PRELOAD_HEADER = "lafiya-card";
+
+// Card routes that benefit from navigation preload. Kept in sync with the
+// offline card renderer routes.
+const CARD_ROUTE_PREFIX = "/cards/";
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
@@ -34,6 +43,12 @@ self.addEventListener("activate", (event) => {
           .filter((key) => key.startsWith(CACHE_PREFIX) && !key.endsWith(currentVersion))
           .map((key) => caches.delete(key)),
       );
+      // Enable navigation preload so the browser starts the network request
+      // for card navigations in parallel with service-worker boot, removing
+      // the worker startup latency from the critical path.
+      if (self.registration.navigationPreload) {
+        await self.registration.navigationPreload.enable(NAVIGATION_PRELOAD_HEADER);
+      }
       await self.clients.claim();
     })(),
   );
@@ -48,12 +63,47 @@ self.addEventListener("message", (event) => {
   }
 });
 
+// Handle card navigations using the navigation preload response when the
+// browser provides one, falling back to a regular fetch. Either path results
+// in exactly one server hit, so capability consumption semantics are
+// unchanged.
+async function handleCardNavigation(event) {
+  const { request } = event;
+  const cache = await caches.open(`${CACHE_PREFIX}-${currentVersion ?? "latest"}`);
+
+  // Prefer the preloaded response: the network request already started while
+  // the worker was booting, so we avoid the startup latency entirely.
+  if (event.preloadResponse) {
+    try {
+      const preloaded = await event.preloadResponse;
+      if (preloaded) return preloaded;
+    } catch (error) {
+      // Fall through to a regular fetch below.
+    }
+  }
+
+  try {
+    return await fetch(request);
+  } catch (error) {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    const fallback = await cache.match("/offline.html");
+    if (fallback) return fallback;
+    throw error;
+  }
+}
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+
+  if (request.mode === "navigate" && url.pathname.startsWith(CARD_ROUTE_PREFIX)) {
+    event.respondWith(handleCardNavigation(event));
+    return;
+  }
 
   event.respondWith(
     (async () => {
