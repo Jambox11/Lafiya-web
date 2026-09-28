@@ -16,6 +16,8 @@ import {
 
 const CARD_CACHE = "lafiya-emergency-envelopes-v1";
 const CARD_PATH_PREFIX = "/card/";
+const PERIODIC_SYNC_TAG = "lafiya-refresh";
+const PERIODIC_SYNC_MIN_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
 self.addEventListener("install", () => self.skipWaiting());
 
@@ -47,6 +49,11 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(handleCardNavigation(event));
 });
 
+self.addEventListener("periodicsync", (event) => {
+  if (event.tag !== PERIODIC_SYNC_TAG) return;
+  event.waitUntil(refreshCachedEnvelopes());
+});
+
 async function withCacheLock(name, fn) {
   const locks = self.navigator && self.navigator.locks;
   if (locks && typeof locks.request === "function") {
@@ -76,6 +83,59 @@ async function storeEnvelope(request, envelope) {
     await cache.put(request, new Response(bytes, { headers }));
     return true;
   });
+}
+
+// A capability token with a view budget must never be refreshed: a refresh
+// would consume a view. Only refresh envelopes that carry no view budget.
+async function isRefreshableEnvelope(envelope) {
+  if (!envelope || typeof envelope !== "object") return false;
+  const capability = envelope.capability;
+  if (!capability || typeof capability !== "object") return true;
+  const budget = capability.viewBudget ?? capability.viewsRemaining;
+  return budget === undefined || budget === null;
+}
+
+async function refreshCachedEnvelopes() {
+  const cache = await caches.open(CARD_CACHE);
+  const requests = await cache.keys();
+  await Promise.all(
+    requests.map(async (request) => {
+      const url = new URL(request.url);
+      if (
+        url.origin !== self.location.origin ||
+        !url.pathname.startsWith(CARD_PATH_PREFIX)
+      )
+        return;
+
+      const cached = await cache.match(request);
+      const envelope = cached ? await cached.json().catch(() => null) : null;
+      if (!(await isRefreshableEnvelope(envelope))) return;
+
+      try {
+        const networkResponse = await fetch(request);
+        if (networkResponse.status === 404) {
+          // Revoked or removed card: evict the stale local copy.
+          await cache.delete(request);
+          return;
+        }
+        if (!networkResponse.ok) return;
+
+        const refreshed = await createOfflineEnvelope(
+          await networkResponse.clone().text(),
+          new Date().toISOString(),
+        );
+        if (refreshed) {
+          await storeEnvelope(request, refreshed);
+        } else {
+          // Consent withdrawal, malformed source, or unsupported version:
+          // treat as revocation and evict.
+          await cache.delete(request);
+        }
+      } catch {
+        // Offline or transient failure: keep the existing envelope.
+      }
+    }),
+  );
 }
 
 async function handleCardNavigation(event) {
