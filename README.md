@@ -495,3 +495,8 @@ These works directly informed Lafiya's design and are the intended reading for c
 _Built for the Stellar ecosystem. Open source. Community owned._
 
 </div>
+
+## Handsoff notes
+
+<!-- handsoff-issue-576 -->
+- #576: [Privacy] Publish impact statistics with differential privacy
