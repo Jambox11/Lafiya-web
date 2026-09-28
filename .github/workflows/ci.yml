@@ -44,6 +44,32 @@ jobs:
       - name: Verify no client bundle leaks
         run: node scripts/check-client-bundles.js
 
+  alerts:
+    name: Terraform alerts (validate + plan)
+    runs-on: ubuntu-latest
+    # The Sentry auth token is stored as a repository secret and is only
+    # exposed to this job. It is never logged or sent anywhere else.
+    env:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      TF_IN_AUTOMATION: "true"
+    defaults:
+      run:
+        working-directory: infra/alerts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.6.6
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate
+      - name: Terraform plan
+        if: github.event_name == 'pull_request'
+        run: terraform plan -input=false -no-color
+      - name: Terraform apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -input=false -auto-approve -no-color
+
   integration:
     name: Integration tests (local Supabase)
     runs-on: ubuntu-latest
