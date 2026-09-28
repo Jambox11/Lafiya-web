@@ -6,5 +6,8 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const { getRuntimeConfig } = await import("./lib/runtime-config");
     getRuntimeConfig();
+
+    const { registerTracing } = await import("./lib/observability/tracing");
+    registerTracing();
   }
 }
