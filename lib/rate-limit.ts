@@ -43,7 +43,7 @@ export interface RateLimitResult {
  * key. This is a single indexed (primary key) read.
  */
 export async function checkRateLimit(key: string): Promise<RateLimitResult> {
-  const supabase = createAdminClient();
+  const supabase = createAdminClient({ purpose: "rate-limit" });
   const { data, error } = await supabase
     .from("rate_limits")
     .select("blocked_until")
@@ -88,7 +88,7 @@ export async function checkRateLimit(key: string): Promise<RateLimitResult> {
  * same key (whether from one instance or many) never lose an increment.
  */
 export async function recordFailure(key: string): Promise<void> {
-  const supabase = createAdminClient();
+  const supabase = createAdminClient({ purpose: "rate-limit" });
   const { error } = await supabase.rpc("rate_limit_record_failure", {
     p_key: key,
   });
@@ -102,7 +102,7 @@ export async function recordFailure(key: string): Promise<void> {
  * Resets the rate limit records for a given key on successful attempt.
  */
 export async function recordSuccess(key: string): Promise<void> {
-  const supabase = createAdminClient();
+  const supabase = createAdminClient({ purpose: "rate-limit" });
   const { error } = await supabase.from("rate_limits").delete().eq("key", key);
 
   if (error) {
@@ -114,7 +114,7 @@ export async function recordSuccess(key: string): Promise<void> {
  * Helper to clear all rate limits (useful in tests).
  */
 export async function clearAllRateLimits(): Promise<void> {
-  const supabase = createAdminClient();
+  const supabase = createAdminClient({ purpose: "rate-limit" });
   const { error } = await supabase
     .from("rate_limits")
     .delete()
