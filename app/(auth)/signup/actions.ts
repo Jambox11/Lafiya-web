@@ -9,6 +9,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { logError } from "@/lib/logging/logger";
 import { CURRENT_POLICY_VERSION } from "@/lib/consent";
 import { formatZodError } from "@/lib/validation/zod";
+import { isBreachedPassword } from "@/lib/security/breached-password";
 
 const signUpSchema = z.object({
   email: z.email("Enter a valid email address"),
@@ -36,6 +37,13 @@ export async function signUp(
 
   if (!parsed.success) {
     return { error: formatZodError(parsed.error).error };
+  }
+
+  if (await isBreachedPassword(parsed.data.password)) {
+    return {
+      error:
+        "This password has appeared in a known data breach. Please choose a different password.",
+    };
   }
 
   const supabase = await createClient();
