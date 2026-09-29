@@ -495,3 +495,8 @@ These works directly informed Lafiya's design and are the intended reading for c
 _Built for the Stellar ecosystem. Open source. Community owned._
 
 </div>
+
+## Handsoff notes
+
+<!-- handsoff-issue-532 -->
+- #532: [Auth] Add one-time recovery codes for account recovery when email or phone is lost
