@@ -35,16 +35,15 @@ export default defineConfig({
     },
   },
   projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
     {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-    },
-    {
-      // Slow, CDP-throttled scenarios (2G/3G/flapping). Kept in a separate
-      // project so CI can run them nightly instead of on every PR.
-      name: "chromium-network",
-      testMatch: /network\..*\.spec\.ts/,
-      use: { ...devices["Desktop Chrome"] },
+      name: "forced-colors",
+      testMatch: /forced-colors\/.*\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        colorScheme: "dark",
+        forcedColors: "active",
+      },
     },
   ],
 });
