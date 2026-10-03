@@ -104,6 +104,10 @@ export function EmergencyCardContent({
       ? "not_verified"
       : (card.trust_state ?? "unavailable");
 
+  const medications = formatMedications(
+    (card.medications as unknown[] | null) ?? null,
+  );
+
   return (
     <>
       {/* A skip link outside every landmark fails axe's "region" rule
@@ -320,17 +324,10 @@ export function EmergencyCardContent({
           <NotifyContactsForm token={capabilityToken} />
         ) : null}
 
-        {card.language ? (
-          <CardField label="Language spoken" value={card.language} />
-        ) : null}
-        <p
-          role="note"
-          className="mt-4 text-xs text-zinc-500 dark:text-zinc-500"
-        >
-          Lafiya is pre-alpha software on the Stellar testnet, not yet audited,
-          and not a medical device. Not a substitute for professional medical
-          judgment.
-        </p>
+        <OfflineEnvelopeSource
+          cardId={card.id}
+          authorizationKind={authorizationKind}
+        />
       </main>
     </>
   );

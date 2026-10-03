@@ -36,6 +36,29 @@ const disclosureFields = [
   "language",
 ] as const;
 
+// Clinically reviewed wording. Each clinical fact is disclosed only when the
+// patient explicitly opts in; the default is not disclosed.
+const clinicalDisclosureFields = [
+  {
+    field: "advance_directives",
+    label: "Advance directives or DNR status",
+    description:
+      "Resuscitation preferences and any advance directive document reference. Legal status varies by jurisdiction; this is not a substitute for a valid legal document.",
+  },
+  {
+    field: "implanted_devices",
+    label: "Implanted devices",
+    description:
+      "Pacemaker, ICD, or other implanted device, including MRI safety implications.",
+  },
+  {
+    field: "transfusion_restrictions",
+    label: "Blood-product restrictions",
+    description:
+      "Refusal of transfusion or other blood-product restrictions.",
+  },
+] as const;
+
 export function PrivacyControls({
   revisionId,
   policy,

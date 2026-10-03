@@ -23,6 +23,32 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: result.error }, { status: 401 });
   }
 
+  const format = new URL(request.url).searchParams.get("format");
+
+  if (format === "ips") {
+    const composition = buildIpsComposition(
+      result.data as Record<string, unknown>,
+    );
+    const bundle = {
+      resourceType: "Bundle",
+      type: "document",
+      timestamp: new Date().toISOString(),
+      entry: [{ resource: composition }],
+    };
+
+    const ipsFilename = `lafiya-ips-${new Date()
+      .toISOString()
+      .slice(0, 10)}.json`;
+
+    return new NextResponse(JSON.stringify(bundle, null, 2), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/fhir+json",
+        "Content-Disposition": `attachment; filename="${ipsFilename}"`,
+      },
+    });
+  }
+
   const filename = `lafiya-profile-export-${new Date()
     .toISOString()
     .slice(0, 10)}.json`;
