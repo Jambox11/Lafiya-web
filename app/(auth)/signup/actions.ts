@@ -13,6 +13,7 @@ import {
   withTimingFloor,
 } from "@/lib/security/timing";
 import { formatZodError } from "@/lib/validation/zod";
+import { isBreachedPassword } from "@/lib/security/breached-password";
 
 const signUpSchema = z.object({
   email: z.email("Enter a valid email address"),
@@ -84,6 +85,13 @@ async function createAccount(formData: FormData): Promise<SignUpState> {
 
   if (!parsed.success) {
     return { error: formatZodError(parsed.error).error };
+  }
+
+  if (await isBreachedPassword(parsed.data.password)) {
+    return {
+      error:
+        "This password has appeared in a known data breach. Please choose a different password.",
+    };
   }
 
   const supabase = await createClient();
