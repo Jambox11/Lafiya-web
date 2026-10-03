@@ -3,34 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 
-interface QRCardDisplayProps {
-  value: string;
-  size?: number;
-  label?: string;
-}
-
-/**
- * Renders a QR code for the given value.
- *
- * Accessibility note: in Windows High Contrast / forced-colors mode the OS
- * overrides author colours. A QR code must remain black-on-white to stay
- * scannable, so we opt out of forced colour adjustment on the canvas and
- * paint an explicit white background with black modules.
- *
- * Reflow note (WCAG 2.2 SC 1.4.10): the canvas is capped at the container
- * width so it never forces horizontal scrolling at 320 CSS px or 200% zoom.
- */
-export default function QRCardDisplay({
-  value,
-  size = 220,
-  label = 'QR code',
-}: QRCardDisplayProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+import { CopyLinkButton } from "./copy-link-button";
+import { NfcWriteButton } from "./nfc-write-button";
+import { RegenerateCardButton } from "./regenerate-card-button";
 
     let cancelled = false;
 
@@ -62,13 +37,34 @@ export default function QRCardDisplay({
         className="w-full max-w-full min-w-0 overflow-hidden rounded-lg border border-neutral-300 bg-white p-3 forced-colors:border-[CanvasText]"
         style={{ forcedColorAdjust: 'none' }}
       >
-        <canvas
-          ref={canvasRef}
-          role="img"
-          aria-label={label}
-          className="block h-auto w-full max-w-full"
-          style={{ forcedColorAdjust: 'none' }}
-        />
+        {cardUrl}
+      </p>
+      <div className="flex flex-col items-center gap-1">
+        <p className="max-w-xs text-xs font-medium text-zinc-600 dark:text-zinc-400">
+          Test your QR code
+        </p>
+        <p className="max-w-xs text-xs text-zinc-500 dark:text-zinc-500">
+          Point your phone&apos;s camera at the QR code above, or open the link
+          below on another device to confirm it works before relying on it in an
+          emergency.
+        </p>
+        <a
+          href={cardUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs font-medium text-zinc-700 underline dark:text-zinc-300"
+        >
+          Open card link
+        </a>
+      </div>
+      <p className="max-w-xs text-xs text-amber-700 dark:text-amber-300">
+        This legacy QR will stop working on {formatDate(legacySunsetAt)}.
+        Create a current emergency QR below.
+      </p>
+      <div className="flex flex-wrap justify-center gap-3">
+        <CopyLinkButton text={cardUrl} />
+        <NfcWriteButton cardUrl={cardUrl} revokeHref="#capability-share-heading" />
+        <RegenerateCardButton />
       </div>
       {error ? (
         <p
