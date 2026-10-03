@@ -46,6 +46,12 @@ import { decodeAttestationResult } from "@/lib/stellar/generated/attestation";
  * `revalidateTag(\`attestation:${recordHash}\`)` to invalidate proactively.
  *
  * The public function signature is unchanged, so no caller needs to change.
+ *
+ * --- Tracing (Issue #578) ---
+ * The Soroban RPC round trip is wrapped in a `withSpan` span so the card
+ * route trace shows the RPC leg alongside the capability consumption and
+ * render spans. Only allowlisted, non-sensitive attributes are recorded —
+ * the record hash is never attached as a span attribute.
  */
 
 /** Fixture hash for local dev/demo only — not a real record's hash. */
@@ -237,6 +243,10 @@ function simulationSource() {
 
 /**
  * Uncached lookup with circuit breaker and timeout protection.
+ *
+ * The Soroban RPC round trip is wrapped in a `withSpan` span so the card
+ * route trace shows the RPC leg. Only allowlisted attributes are recorded;
+ * the record hash and any capability tokens are never attached.
  */
 async function fetchAttestationUncached(
   recordHash: string,

@@ -94,6 +94,15 @@ export async function proxy(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
   const isPublicCard = pathname === "/card" || pathname.startsWith("/card/");
+  const isAnalytics = pathname === ANALYTICS_PATH;
+
+  if (isAnalytics) {
+    // The analytics beacon is cookieless and must not be cached, indexed, or
+    // carry the card capability as a referrer to any downstream service.
+    response.headers.set("Referrer-Policy", "no-referrer");
+    response.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+    response.headers.set("Cache-Control", "private, no-store, max-age=0");
+  }
 
   if (isPublicCard) {
     // The URL is a bearer capability (legacy UUID or current capability). It
