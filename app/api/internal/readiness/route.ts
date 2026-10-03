@@ -11,6 +11,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type DependencyStatus = "ok" | "unreachable";
+type StellarStatus = DependencyStatus | "TESTNET_RESET_DETECTED";
 
 /**
  * Verification-indexer gap state. `GAP_DETECTED` means the checkpoint ledger
@@ -33,9 +34,45 @@ async function checkSupabase(): Promise<DependencyStatus> {
   }
 }
 
-async function checkStellar(): Promise<DependencyStatus> {
+/**
+ * Detect a Stellar testnet reset. A reset wipes contracts and accounts, so the
+ * ledger sequence regresses below our checkpoint, the network passphrase no
+ * longer matches, or the configured contract is missing. This logic is
+ * explicitly forbidden on mainnet: a mainnet deployment must never be marked
+ * as reset, and any mismatch there is treated as unreachable instead.
+ */
+async function checkStellar(): Promise<StellarStatus> {
+  const isMainnet = serverEnv.STELLAR_NETWORK === "mainnet";
   try {
-    await new rpc.Server(serverEnv.SOROBAN_RPC_URL).getHealth();
+    const server = new rpc.Server(serverEnv.SOROBAN_RPC_URL);
+    await server.getHealth();
+
+    const latest = await server.getLatestLedger();
+    const checkpoint = serverEnv.STELLAR_LEDGER_CHECKPOINT;
+    if (
+      !isMainnet &&
+      typeof checkpoint === "number" &&
+      latest.sequence < checkpoint
+    ) {
+      return "TESTNET_RESET_DETECTED";
+    }
+
+    const contractId = serverEnv.SOROBAN_CONTRACT_ID;
+    if (!isMainnet && contractId) {
+      const entries = await server.getContractData(
+        contractId,
+        // A missing contract instance is a reset signal.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (await import("@stellar/stellar-sdk")).xdr.LedgerKey.contractData(
+          new (await import("@stellar/stellar-sdk")).Contract(contractId)
+            .getFootprint(),
+        ),
+      );
+      if (!entries) {
+        return "TESTNET_RESET_DETECTED";
+      }
+    }
+
     return "ok";
   } catch {
     return "unreachable";
