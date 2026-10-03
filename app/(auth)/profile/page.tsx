@@ -320,7 +320,7 @@ async function ProfileContent() {
         <MfaEnrollment />
       </div>
 
-      <hr className="border-zinc-200 dark:border-zinc-800" />
+      <PrivacyControls consentEvents={consentEvents ?? []} />
 
       <div className="flex flex-col gap-4">
         <h2 className="text-sm font-medium text-red-600 dark:text-red-400">

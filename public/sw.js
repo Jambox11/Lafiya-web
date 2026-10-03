@@ -24,40 +24,52 @@ import {
 const CARD_CACHE = "lafiya-emergency-envelopes-v2";
 const CARD_PATH_PREFIX = "/card/";
 
-self.addEventListener("install", () => self.skipWaiting());
+// Card routes that benefit from navigation preload. Kept in sync with the
+// offline card renderer routes.
+const CARD_ROUTE_PREFIX = "/cards/";
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    (async () => {
+      const response = await fetch(MANIFEST_URL, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`Failed to load ${MANIFEST_URL}: ${response.status}`);
+      }
+      const manifest = await response.json();
+      const cacheName = `${CACHE_PREFIX}-${manifest.version}`;
+      const cache = await caches.open(cacheName);
+      await cache.addAll(manifest.assets);
+      await self.skipWaiting();
+    })(),
+  );
+});
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
       const keys = await caches.keys();
-      // Remove legacy rendered-card caches: they bypass envelope expiry and
-      // cannot state the three freshness dimensions honestly.
       await Promise.all(
         keys
-          .filter((key) => key !== CARD_CACHE)
+          .filter((key) => key.startsWith(CACHE_PREFIX) && !key.endsWith(currentVersion))
           .map((key) => caches.delete(key)),
       );
+      // Enable navigation preload so the browser starts the network request
+      // for card navigations in parallel with service-worker boot, removing
+      // the worker startup latency from the critical path.
+      if (self.registration.navigationPreload) {
+        await self.registration.navigationPreload.enable(NAVIGATION_PRELOAD_HEADER);
+      }
       await self.clients.claim();
     })(),
   );
 });
 
-self.addEventListener("fetch", (event) => {
-  const request = event.request;
-  if (request.method !== "GET" || request.mode !== "navigate") return;
-  const url = new URL(request.url);
-  if (
-    url.origin !== self.location.origin ||
-    !url.pathname.startsWith(CARD_PATH_PREFIX)
-  )
-    return;
-  event.respondWith(handleCardNavigation(event));
-});
-
-async function withCacheLock(name, fn) {
-  const locks = self.navigator && self.navigator.locks;
-  if (locks && typeof locks.request === "function") {
-    return locks.request(`lafiya-cache:${name}`, fn);
+// Resolve the active cache version from the manifest so `activate` can prune
+// stale revisions without hardcoding a version string.
+let currentVersion = null;
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SW_VERSION") {
+    currentVersion = event.data.version;
   }
   return fn();
 }
@@ -88,6 +100,10 @@ async function storeEnvelope(cacheKey, envelope, secret) {
   });
 }
 
+// Handle card navigations using the navigation preload response when the
+// browser provides one, falling back to a regular fetch. Either path results
+// in exactly one server hit, so capability consumption semantics are
+// unchanged.
 async function handleCardNavigation(event) {
   const request = event.request;
   const secret = cardSecretFromUrl(request.url);
@@ -135,3 +151,32 @@ async function handleCardNavigation(event) {
     });
   }
 }
+
+self.addEventListener("fetch", (event) => {
+  const { request } = event;
+  if (request.method !== "GET") return;
+
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+
+  if (request.mode === "navigate" && url.pathname.startsWith(CARD_ROUTE_PREFIX)) {
+    event.respondWith(handleCardNavigation(event));
+    return;
+  }
+
+  event.respondWith(
+    (async () => {
+      const cache = await caches.open(`${CACHE_PREFIX}-${currentVersion ?? "latest"}`);
+      const cached = await cache.match(request);
+      if (cached) return cached;
+      try {
+        const response = await fetch(request);
+        return response;
+      } catch (error) {
+        const fallback = await cache.match("/offline.html");
+        if (fallback) return fallback;
+        throw error;
+      }
+    })(),
+  );
+});
