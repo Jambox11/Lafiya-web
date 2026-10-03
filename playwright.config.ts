@@ -30,5 +30,16 @@ export default defineConfig({
       ATTESTATION_MODE: "mock",
     },
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    {
+      name: "forced-colors",
+      testMatch: /forced-colors\/.*\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        colorScheme: "dark",
+        forcedColors: "active",
+      },
+    },
+  ],
 });
