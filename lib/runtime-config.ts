@@ -390,6 +390,20 @@ export function getRuntimeConfig(
     config.CHW_PROTOCOL_EPOCH_ID && config.CHW_PROTOCOL_INTENT_SIGNING_KEY,
   );
 
+  // Web Push is enabled only when the full VAPID triple is present. A
+  // partially configured deployment is a misconfiguration, not a silent
+  // no-op, so it fails fast below.
+  const webPushConfigured = Boolean(
+    config.NEXT_PUBLIC_VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY,
+  );
+  const webPushPartiallyConfigured =
+    !webPushConfigured &&
+    Boolean(
+      config.NEXT_PUBLIC_VAPID_PUBLIC_KEY ||
+        config.VAPID_PRIVATE_KEY ||
+        config.VAPID_SUBJECT,
+    );
+
   if (isProduction) {
     requireConfigured(attestationMode === "live", "PRODUCTION_MOCK_FORBIDDEN");
     requireConfigured(
@@ -407,6 +421,11 @@ export function getRuntimeConfig(
     // incident waiting to happen.
     requireConfigured(config.DATABASE_URL, "POOLER_URL_REQUIRED");
   }
+
+  requireConfigured(
+    !webPushPartiallyConfigured,
+    "WEB_PUSH_CONFIG_INCOMPLETE",
+  );
 
   if (isProduction) {
     requireConfigured(

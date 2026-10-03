@@ -23,6 +23,15 @@ import {
 // v2: encrypted envelopes. Activation deletes the v1 plaintext cache.
 const CARD_CACHE = "lafiya-emergency-envelopes-v2";
 const CARD_PATH_PREFIX = "/card/";
+const PERIODIC_SYNC_TAG = "lafiya-refresh";
+const PERIODIC_SYNC_MIN_INTERVAL_MS = 12 * 60 * 60 * 1000;
+
+// Web Push (RFC 8291) payloads are decrypted by the browser before they reach
+// this handler. Payloads must never contain PHI or capability tokens: only a
+// generic title/body plus a same-origin path to open on click.
+const PUSH_DEFAULT_TITLE = "Lafiya";
+const PUSH_DEFAULT_BODY = "You have a new notification.";
+const PUSH_DEFAULT_PATH = "/";
 
 // Card routes that benefit from navigation preload. Kept in sync with the
 // offline card renderer routes.

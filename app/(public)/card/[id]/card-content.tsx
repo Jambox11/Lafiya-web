@@ -223,7 +223,11 @@ export function EmergencyCardContent({
           <h2 id="clinical-details-heading" className="sr-only">
             Clinical details
           </h2>
-          <CardField label="Allergies" value={formatList(card.allergies)} />
+          <CardField
+            label="Allergies"
+            value={formatList(card.allergies)}
+            changedAt={card.allergies_changed_at}
+          />
           <CardField
             label="Current medications"
             value={formatList(
@@ -263,9 +267,7 @@ export function EmergencyCardContent({
                     key={`${contact.name}-${contact.phone}`}
                     className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800"
                   >
-                    <p className="font-medium text-zinc-950 dark:text-zinc-50">
-                      {contact.name}
-                    </p>
+                    <p className="font-medium">{contact.name}</p>
                     <p className="text-sm text-zinc-600 dark:text-zinc-400">
                       {contact.relationship}
                     </p>
@@ -299,16 +301,16 @@ export function EmergencyCardContent({
                         </a>
                       </div>
                     ) : (
-                      <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-                        Phone number unavailable
-                      </p>
+                      <p className="text-sm">{contact.phone}</p>
                     )}
                   </li>
                 );
               })}
             </ul>
           </section>
-        ) : null}
+        ) : (
+          <CardField label="Emergency contacts" value="None recorded" />
+        )}
 
         {capabilityToken && card.emergency_contacts?.length ? (
           <NotifyContactsForm token={capabilityToken} />
@@ -326,21 +328,44 @@ export function EmergencyCardContent({
           judgment.
         </p>
       </main>
-      <OfflineEnvelopeSource
-        card={card}
-        authorizationKind={authorizationKind}
-      />
     </>
   );
 }
 
-function CardField({ label, value }: { label: string; value: string }) {
+function CardField({
+  label,
+  value,
+  changedAt,
+}: {
+  label: string;
+  value: string;
+  /** Issue #544: server-projected revision timestamp for this field, or
+   * undefined when the field is not tracked / never changed. */
+  changedAt?: string | null;
+}) {
+  const recentlyChanged = isRecentlyChanged(changedAt);
   return (
-    <section>
-      <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+    <div>
+      <dt className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
         {label}
-      </h2>
-      <p className="text-zinc-950 dark:text-zinc-50">{value}</p>
-    </section>
+      </dt>
+      <dd className="mt-1 text-zinc-950 dark:text-zinc-50">
+        {value}
+        {recentlyChanged ? (
+          <span
+            data-testid={`card-recent-change-${label
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")}`}
+            className="mt-1 flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-300"
+          >
+            {/* Icon + text so the marker never relies on colour alone. */}
+            <span aria-hidden="true">⟳</span>
+            <span>
+              Recently updated — {formatTime(changedAt ?? null)}
+            </span>
+          </span>
+        ) : null}
+      </dd>
+    </div>
   );
 }
