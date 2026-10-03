@@ -110,9 +110,16 @@ async function clearDraft(userId: string) {
 export function ProfileForm({
   profile,
   userId,
+  signedPhotoUrl,
 }: {
   profile: ProfileRow | null;
   userId: string;
+  /**
+   * Issue #528: short-lived signed URL for the initial avatar preview,
+   * resolved server-side by the profile page. Null when no photo or
+   * signing failed. Passed to PhotoUploadField as initialUrl.
+   */
+  signedPhotoUrl?: string | null;
 }) {
   const [state, formAction, isPending] = useActionState(
     upsertProfile,
@@ -301,7 +308,7 @@ export function ProfileForm({
 
       <PhotoUploadField
         userId={userId}
-        initialUrl={profile?.photo_url ?? null}
+        initialUrl={signedPhotoUrl ?? null}
         error={state?.errors?.photoUrl}
       />
 
