@@ -6,14 +6,13 @@ import {
   TransactionBuilder,
   nativeToScVal,
   rpc,
-  scValToNative,
 } from "@stellar/stellar-sdk";
 import { unstable_cache } from "next/cache";
 
 import type { Attestation } from "@/lib/attestation/types";
 import { getProtocolRuntimeConfig } from "@/lib/chw-protocol/config";
 import { serverEnv } from "@/lib/env-server";
-import { withSpan } from "@/lib/observability/tracing";
+import { decodeAttestationResult } from "@/lib/stellar/generated/attestation";
 
 /**
  * Live M1 attestation lookup.
@@ -24,6 +23,12 @@ import { withSpan } from "@/lib/observability/tracing";
  * read-only: we `simulateTransaction` it, which costs nothing and needs no
  * signing, but still executes the contract and returns the on-chain
  * `Attestation` for the given record hash.
+ *
+ * The `ScVal` returned by the contract is decoded by the generated bindings
+ * in `lib/stellar/generated/attestation.ts` (see
+ * `scripts/gen-contract-bindings.mjs`), not by hand here. Regenerating the
+ * bindings against the deployed spec is gated in CI so drift is caught before
+ * runtime.
  *
  * When `ATTESTATION_CONTRACT_ID` is unset (local dev, CI, or pre-deploy), the
  * function falls back to the in-memory mock below so the verified indicator,
@@ -246,18 +251,56 @@ function simulationSource() {
 async function fetchAttestationUncached(
   recordHash: string,
 ): Promise<Attestation | null> {
-  return withSpan(
-    "stellar.attestation.get",
-    {
-      "rpc.system": "soroban",
-      "rpc.method": "get_attestation",
-      "rpc.service": "lafiya-contracts",
-    },
-    () =>
-      attestationBreaker.execute(async () => {
-        // Mock attestations are intentionally limited to explicitly non-production
-        // environments. A production process cannot reach this
-        return null;
-      }),
-  );
+  return attestationBreaker.execute(async () => {
+    // Mock attestations are intentionally limited to explicitly non-production
+    // environments. A production process cannot reach this branch.
+    if (!serverEnv.ATTESTATION_CONTRACT_ID) {
+      return MOCK_ATTESTATIONS.get(recordHash) ?? null;
+    }
+
+    const server = new rpc.Server(protocolRuntimeConfig.sorobanRpcUrl, {
+      allowHttp: protocolRuntimeConfig.sorobanRpcUrl.startsWith("http://"),
+    });
+    const contract = new Contract(serverEnv.ATTESTATION_CONTRACT_ID);
+
+    const tx = new TransactionBuilder(simulationSource(), {
+      fee: BASE_FEE,
+      networkPassphrase: protocolRuntimeConfig.networkPassphrase,
+    })
+      .addOperation(
+        contract.call("get_attestation", nativeToScVal(recordHash, { type: "string" })),
+      )
+      .setTimeout(30)
+      .build();
+
+    const simulation = await withTimeout(
+      () => server.simulateTransaction(tx),
+      ATTESTATION_TIMEOUT_MS,
+    );
+
+    if (rpc.Api.isSimulationError(simulation)) {
+      throw new Error(`Attestation simulation failed: ${simulation.error}`);
+    }
+
+    const returnValue = simulation.result?.retval;
+    if (!returnValue) {
+      return null;
+    }
+
+    // Decode via the generated bindings so the shape stays in lockstep with
+    // the deployed contract spec (see scripts/gen-contract-bindings.mjs).
+    return decodeAttestationResult(returnValue);
+  });
 }
+
+/**
+ * Cached attestation lookup. See module docs for caching rationale.
+ */
+export const getAttestation = unstable_cache(
+  fetchAttestationUncached,
+  ["attestation"],
+  {
+    revalidate: ATTESTATION_CACHE_TTL_SECONDS,
+    tags: [],
+  },
+);
