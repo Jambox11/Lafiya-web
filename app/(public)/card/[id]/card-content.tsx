@@ -9,6 +9,7 @@ import type { EmergencyCardRow } from "@/lib/supabase/types";
 
 import { NotifyContactsForm } from "../c/[token]/notify-contacts-form";
 import { VerifiedBadge, type VerificationStatus } from "./verified-badge";
+import { ReadAloud } from "./read-aloud";
 
 function formatList(values: string[] | null, pinRequired = false): string {
   if (values === null) {
@@ -95,6 +96,9 @@ export function EmergencyCardContent({
   /** Issue #631: the PIN entry form, shown when fields are PIN-gated. */
   pinGate?: ReactNode;
 }) {
+  const locale = labelLocale ?? negotiateLabelLocale(acceptLanguage);
+  const t = GLOSSARY[locale];
+  const patientLang = card.language ?? null;
   const status: VerificationStatus =
     card.trust_state === "unverified"
       ? "not_verified"
