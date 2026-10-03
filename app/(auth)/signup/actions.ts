@@ -114,15 +114,12 @@ async function createAccount(formData: FormData): Promise<SignUpState> {
       error.message.toLowerCase().includes("password")
     ) {
       return {
-        error:
-          "That password doesn't meet the requirements. Please choose a stronger password.",
+        ok: true as const,
+        data: {
+          info: "Check your email to confirm your account, then sign in.",
+        },
       };
     }
-    return {
-      error:
-        "We couldn't create your account. Please try again or contact support if the problem continues.",
-    };
-  }
 
   // With email confirmations on, Supabase answers an already-registered
   // email with an obfuscated user that has no identities, and no error.

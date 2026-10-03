@@ -22,6 +22,7 @@ import {
 import { logError } from "@/lib/logging/logger";
 import { coarseUserAgent } from "@/lib/sessions/user-agent";
 import { formatZodError } from "@/lib/validation/zod";
+import { defineAction } from "@/lib/actions/define-action";
 
 const signInSchema = z.object({
   email: z.email("Enter a valid email address"),
@@ -132,3 +133,41 @@ async function attemptSignIn(formData: FormData): Promise<SignInState> {
 
   redirect("/profile");
 }
+
+/**
+ * Type-safe wrapper around the sign-in action (Issue #617).
+ *
+ * Reuses the same schema, rate-limit helpers, and error mapping as `signIn`
+ * but routes them through `defineAction` so the action returns a standard
+ * discriminated `Result<T, ActionError>` envelope instead of a raw error
+ * string. Behaviour is unchanged; only the error surface is normalized.
+ */
+export const signInAction = defineAction({
+  input: signInSchema,
+  rateLimit: {
+    key: async (input) => {
+      const email = input.email.trim().toLowerCase();
+      const ip = await getClientIp();
+      return `signin:${email}:${ip}`;
+    },
+    check: checkRateLimit,
+    onFailure: recordFailure,
+    onSuccess: recordSuccess,
+  },
+  handler: async (input) => {
+    const supabase = await createClient();
+    const { error } = await supabase.auth.signInWithPassword({
+      email: input.email,
+      password: input.password,
+      options: {
+        rememberMe: input.rememberMe === "on",
+      },
+    });
+
+    if (error) {
+      return { ok: false, error: { code: "INVALID_CREDENTIALS" } };
+    }
+
+    redirect("/profile");
+  },
+});
