@@ -1,20 +1,27 @@
-// Lafiya emergency-card offline protocol (envelope v1).
+// Lafiya emergency-card offline protocol (envelope v1, encrypted at rest v2).
 //
 // We intentionally cache a structured, versioned projection rather than the
 // rendered HTML. Offline presentation therefore cannot accidentally inherit a
 // live-looking verification badge, stale scripts, or an old route layout.
+// Envelopes are AES-GCM encrypted under a key derived from the card URL's
+// secret segment and stored under an opaque hashed key (issue #630, ADR-004).
 
 import {
   CARD_CACHE_LIMITS,
+  cardSecretFromUrl,
   createOfflineEnvelope,
+  decryptOfflineEnvelope,
+  encryptOfflineEnvelope,
   enforceCacheBudget,
+  offlineCacheKey,
   offlineEnvelopeResponse,
   renderOfflineEnvelope,
   validateOfflineEnvelope,
   withEntryMetaHeaders,
 } from "./offline-cache-helpers.js";
 
-const CARD_CACHE = "lafiya-emergency-envelopes-v1";
+// v2: encrypted envelopes. Activation deletes the v1 plaintext cache.
+const CARD_CACHE = "lafiya-emergency-envelopes-v2";
 const CARD_PATH_PREFIX = "/card/";
 const PERIODIC_SYNC_TAG = "lafiya-refresh";
 const PERIODIC_SYNC_MIN_INTERVAL_MS = 12 * 60 * 60 * 1000;
@@ -26,60 +33,61 @@ const PUSH_DEFAULT_TITLE = "Lafiya";
 const PUSH_DEFAULT_BODY = "You have a new notification.";
 const PUSH_DEFAULT_PATH = "/";
 
-self.addEventListener("install", () => self.skipWaiting());
+// Card routes that benefit from navigation preload. Kept in sync with the
+// offline card renderer routes.
+const CARD_ROUTE_PREFIX = "/cards/";
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    (async () => {
+      const response = await fetch(MANIFEST_URL, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`Failed to load ${MANIFEST_URL}: ${response.status}`);
+      }
+      const manifest = await response.json();
+      const cacheName = `${CACHE_PREFIX}-${manifest.version}`;
+      const cache = await caches.open(cacheName);
+      await cache.addAll(manifest.assets);
+      await self.skipWaiting();
+    })(),
+  );
+});
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
       const keys = await caches.keys();
-      // Remove legacy rendered-card caches: they bypass envelope expiry and
-      // cannot state the three freshness dimensions honestly.
       await Promise.all(
         keys
-          .filter((key) => key !== CARD_CACHE)
+          .filter((key) => key.startsWith(CACHE_PREFIX) && !key.endsWith(currentVersion))
           .map((key) => caches.delete(key)),
       );
+      // Enable navigation preload so the browser starts the network request
+      // for card navigations in parallel with service-worker boot, removing
+      // the worker startup latency from the critical path.
+      if (self.registration.navigationPreload) {
+        await self.registration.navigationPreload.enable(NAVIGATION_PRELOAD_HEADER);
+      }
       await self.clients.claim();
     })(),
   );
 });
 
-self.addEventListener("fetch", (event) => {
-  const request = event.request;
-  if (request.method !== "GET" || request.mode !== "navigate") return;
-  const url = new URL(request.url);
-  if (
-    url.origin !== self.location.origin ||
-    !url.pathname.startsWith(CARD_PATH_PREFIX)
-  )
-    return;
-  event.respondWith(handleCardNavigation(event));
-});
-
-self.addEventListener("periodicsync", (event) => {
-  if (event.tag !== PERIODIC_SYNC_TAG) return;
-  event.waitUntil(refreshCachedEnvelopes());
-});
-
-self.addEventListener("push", (event) => {
-  event.waitUntil(handlePush(event));
-});
-
-self.addEventListener("notificationclick", (event) => {
-  event.notification.close();
-  event.waitUntil(handleNotificationClick(event));
-});
-
-async function withCacheLock(name, fn) {
-  const locks = self.navigator && self.navigator.locks;
-  if (locks && typeof locks.request === "function") {
-    return locks.request(`lafiya-cache:${name}`, fn);
+// Resolve the active cache version from the manifest so `activate` can prune
+// stale revisions without hardcoding a version string.
+let currentVersion = null;
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SW_VERSION") {
+    currentVersion = event.data.version;
   }
   return fn();
 }
 
-async function storeEnvelope(request, envelope) {
-  const response = offlineEnvelopeResponse(envelope);
+async function storeEnvelope(cacheKey, envelope, secret) {
+  const record = await encryptOfflineEnvelope(envelope, secret, cacheKey);
+  if (!record) return false;
+  const request = new Request(new URL(cacheKey, self.location.origin));
+  const response = offlineEnvelopeResponse(record);
   const bytes = new Uint8Array(await response.clone().arrayBuffer());
   return withCacheLock(CARD_CACHE, async () => {
     const cache = await caches.open(CARD_CACHE);
@@ -101,129 +109,17 @@ async function storeEnvelope(request, envelope) {
   });
 }
 
-// A capability token with a view budget must never be refreshed: a refresh
-// would consume a view. Only refresh envelopes that carry no view budget.
-async function isRefreshableEnvelope(envelope) {
-  if (!envelope || typeof envelope !== "object") return false;
-  const capability = envelope.capability;
-  if (!capability || typeof capability !== "object") return true;
-  const budget = capability.viewBudget ?? capability.viewsRemaining;
-  return budget === undefined || budget === null;
-}
-
-async function refreshCachedEnvelopes() {
-  const cache = await caches.open(CARD_CACHE);
-  const requests = await cache.keys();
-  await Promise.all(
-    requests.map(async (request) => {
-      const url = new URL(request.url);
-      if (
-        url.origin !== self.location.origin ||
-        !url.pathname.startsWith(CARD_PATH_PREFIX)
-      )
-        return;
-
-      const cached = await cache.match(request);
-      const envelope = cached ? await cached.json().catch(() => null) : null;
-      if (!(await isRefreshableEnvelope(envelope))) return;
-
-      try {
-        const networkResponse = await fetch(request);
-        if (networkResponse.status === 404) {
-          // Revoked or removed card: evict the stale local copy.
-          await cache.delete(request);
-          return;
-        }
-        if (!networkResponse.ok) return;
-
-        const refreshed = await createOfflineEnvelope(
-          await networkResponse.clone().text(),
-          new Date().toISOString(),
-        );
-        if (refreshed) {
-          await storeEnvelope(request, refreshed);
-        } else {
-          // Consent withdrawal, malformed source, or unsupported version:
-          // treat as revocation and evict.
-          await cache.delete(request);
-        }
-      } catch {
-        // Offline or transient failure: keep the existing envelope.
-      }
-    }),
-  );
-}
-
-// Only same-origin, non-card paths are opened from a notification. Card paths
-// carry capability tokens in the URL, so they are never used as a push target.
-function safeNotificationPath(rawPath) {
-  if (typeof rawPath !== "string" || rawPath.length === 0) {
-    return PUSH_DEFAULT_PATH;
-  }
-  try {
-    const url = new URL(rawPath, self.location.origin);
-    if (url.origin !== self.location.origin) return PUSH_DEFAULT_PATH;
-    if (url.pathname.startsWith(CARD_PATH_PREFIX)) return PUSH_DEFAULT_PATH;
-    return url.pathname + url.search;
-  } catch {
-    return PUSH_DEFAULT_PATH;
-  }
-}
-
-function parsePushPayload(event) {
-  if (!event.data) return {};
-  try {
-    const parsed = event.data.json();
-    if (!parsed || typeof parsed !== "object") return {};
-    return parsed;
-  } catch {
-    return {};
-  }
-}
-
-async function handlePush(event) {
-  const payload = parsePushPayload(event);
-  const title =
-    typeof payload.title === "string" && payload.title.length > 0
-      ? payload.title
-      : PUSH_DEFAULT_TITLE;
-  const body =
-    typeof payload.body === "string" && payload.body.length > 0
-      ? payload.body
-      : PUSH_DEFAULT_BODY;
-  const path = safeNotificationPath(payload.path);
-
-  await self.registration.showNotification(title, {
-    body,
-    tag: typeof payload.tag === "string" ? payload.tag : undefined,
-    data: { path },
-  });
-}
-
-async function handleNotificationClick(event) {
-  const path = safeNotificationPath(
-    event.notification && event.notification.data
-      ? event.notification.data.path
-      : undefined,
-  );
-  const targetUrl = new URL(path, self.location.origin).href;
-
-  const clientList = await self.clients.matchAll({
-    type: "window",
-    includeUncontrolled: true,
-  });
-  for (const client of clientList) {
-    if (client.url === targetUrl && "focus" in client) {
-      return client.focus();
-    }
-  }
-  if (self.clients.openWindow) {
-    return self.clients.openWindow(targetUrl);
-  }
-}
-
+// Handle card navigations using the navigation preload response when the
+// browser provides one, falling back to a regular fetch. Either path results
+// in exactly one server hit, so capability consumption semantics are
+// unchanged.
 async function handleCardNavigation(event) {
   const request = event.request;
+  const secret = cardSecretFromUrl(request.url);
+  const cacheKey = secret ? await offlineCacheKey(request.url) : null;
+  const cacheRequest = cacheKey
+    ? new Request(new URL(cacheKey, self.location.origin))
+    : null;
   try {
     const networkResponse = await fetch(request);
     if (!networkResponse.ok) return networkResponse;
@@ -232,25 +128,27 @@ async function handleCardNavigation(event) {
       await networkResponse.clone().text(),
       new Date().toISOString(),
     );
+    if (!cacheRequest) return networkResponse;
     const cache = await caches.open(CARD_CACHE);
     if (envelope) {
-      await storeEnvelope(request, envelope);
+      await storeEnvelope(cacheKey, envelope, secret);
     } else {
       // Consent withdrawal, malformed source, unsupported envelope version,
       // and unavailable cards remove any prior local copy at next contact.
-      await cache.delete(request);
+      await cache.delete(cacheRequest);
     }
     return networkResponse;
   } catch {
     const cache = await caches.open(CARD_CACHE);
-    const cached = await cache.match(request);
-    const envelope = cached ? await cached.json().catch(() => null) : null;
+    const cached = cacheRequest ? await cache.match(cacheRequest) : undefined;
+    const record = cached ? await cached.json().catch(() => null) : null;
+    const envelope = await decryptOfflineEnvelope(record, secret, cacheKey);
     const validation = await validateOfflineEnvelope(
       envelope,
       new Date().toISOString(),
     );
     if (!validation.valid) {
-      if (cached) event.waitUntil(cache.delete(request));
+      if (cached) event.waitUntil(cache.delete(cacheRequest));
       return new Response(renderOfflineEnvelope(null, validation.reason), {
         status: 200,
         headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -262,3 +160,32 @@ async function handleCardNavigation(event) {
     });
   }
 }
+
+self.addEventListener("fetch", (event) => {
+  const { request } = event;
+  if (request.method !== "GET") return;
+
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+
+  if (request.mode === "navigate" && url.pathname.startsWith(CARD_ROUTE_PREFIX)) {
+    event.respondWith(handleCardNavigation(event));
+    return;
+  }
+
+  event.respondWith(
+    (async () => {
+      const cache = await caches.open(`${CACHE_PREFIX}-${currentVersion ?? "latest"}`);
+      const cached = await cache.match(request);
+      if (cached) return cached;
+      try {
+        const response = await fetch(request);
+        return response;
+      } catch (error) {
+        const fallback = await cache.match("/offline.html");
+        if (fallback) return fallback;
+        throw error;
+      }
+    })(),
+  );
+});

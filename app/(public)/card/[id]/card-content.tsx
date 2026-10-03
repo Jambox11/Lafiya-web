@@ -1,18 +1,19 @@
+import { parsePhoneNumberFromString } from "libphonenumber-js";
 import Image from "next/image";
 import Link from "next/link";
+import type { ReactNode } from "react";
 
 import { formatDateTime } from "@/lib/format/datetime";
 import { OfflineEnvelopeSource } from "@/lib/emergency/offline-source";
 import type { EmergencyCardRow } from "@/lib/supabase/types";
 
+import { NotifyContactsForm } from "../c/[token]/notify-contacts-form";
 import { VerifiedBadge, type VerificationStatus } from "./verified-badge";
 
-/** Issue #544: window within which a critical field is considered "recently
- * updated". Kept in sync with the server-side projection in the card RPC. */
-const RECENT_CHANGE_WINDOW_DAYS = 30;
-
-function formatList(values: string[] | null): string {
-  if (values === null) return "Withheld by patient";
+function formatList(values: string[] | null, pinRequired = false): string {
+  if (values === null) {
+    return pinRequired ? "Requires the card PIN" : "Withheld by patient";
+  }
   return values.length > 0 ? values.join(", ") : "None recorded";
 }
 
@@ -42,26 +43,47 @@ function formatRelativeTime(value: string | null): string {
   }).format(date);
 }
 
-/** Issue #544: true only when the server-projected `changed_at` for a field
- * falls inside the recent-change window. The server never sends historical
- * values, only the timestamp, so nothing sensitive leaks here. */
-function isRecentlyChanged(changedAt: string | null | undefined): boolean {
-  if (!changedAt) return false;
-  const date = new Date(changedAt);
-  if (Number.isNaN(date.getTime())) return false;
-  const diffMs = Date.now() - date.getTime();
-  return diffMs >= 0 && diffMs <= RECENT_CHANGE_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+type ContactLinks = {
+  tel: string;
+  sms: string;
+  whatsapp: string;
+};
+
+/**
+ * Contact numbers are already normalized to E.164 at save time (see
+ * lib/records/canonicalization.ts), but older records may predate that
+ * normalization, so this re-parses defensively (default region "NG",
+ * matching the rest of the app) rather than trusting the stored format.
+ * Returns null for anything that still can't be parsed as a valid number,
+ * which hides the one-tap actions for that contact instead of emitting a
+ * broken link.
+ */
+function contactLinks(phone: string, patientName: string): ContactLinks | null {
+  const parsed = parsePhoneNumberFromString(phone, "NG");
+  if (!parsed?.isValid()) return null;
+
+  const e164 = parsed.number;
+  const digits = e164.slice(1); // wa.me expects digits only, no leading "+"
+  const message = encodeURIComponent(
+    `I'm a responder for ${patientName}. Please call me back.`,
+  );
+
+  return {
+    tel: `tel:${e164}`,
+    sms: `sms:${e164}?&body=${message}`,
+    whatsapp: `https://wa.me/${digits}?text=${message}`,
+  };
 }
 
-function phoneHref(phone: string): string | null {
-  const normalized = phone.replace(/[\s().-]/g, "");
-  return /^\+?[1-9]\d{6,14}$/.test(normalized) ? `tel:${normalized}` : null;
-}
+const actionButtonClassName =
+  "inline-flex min-h-11 min-w-11 items-center justify-center rounded-full border border-zinc-950 px-4 text-sm font-medium text-zinc-950 underline-offset-2 hover:underline focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 focus:outline-none dark:border-zinc-50 dark:text-zinc-50 dark:focus:ring-zinc-600";
 
 export function EmergencyCardContent({
   card,
   authorizationKind,
+  pinGate,
   isOwner = false,
+  signedPhotoUrl,
 }: {
   card: EmergencyCardRow;
   authorizationKind: "legacy" | "capability";
@@ -70,6 +92,8 @@ export function EmergencyCardContent({
    * user_id to the client (get_emergency_card deliberately never returns
    * it). Never trust this from anywhere but a server-side check. */
   isOwner?: boolean;
+  /** Issue #631: the PIN entry form, shown when fields are PIN-gated. */
+  pinGate?: ReactNode;
 }) {
   const status: VerificationStatus =
     card.trust_state === "unverified"
@@ -130,13 +154,16 @@ export function EmergencyCardContent({
           aria-labelledby="identity-heading"
           className="flex items-center gap-4"
         >
-          {card.photo_url ? (
+          {signedPhotoUrl ? (
             <Image
-              src={card.photo_url}
+              src={signedPhotoUrl}
               alt=""
               width={80}
               height={80}
               sizes="80px"
+              // Issue #528: signed URLs change per-request; disable Next.js
+              // image optimization so the optimizer never caches or rewrites them.
+              unoptimized
               className="h-20 w-20 rounded-full object-cover"
             />
           ) : null}
@@ -203,15 +230,21 @@ export function EmergencyCardContent({
           />
           <CardField
             label="Current medications"
-            value={formatList(card.medications)}
-            changedAt={card.medications_changed_at}
+            value={formatList(
+              card.medications,
+              card.disclosure_states?.medications === "pin_required",
+            )}
           />
           <CardField
             label="Chronic conditions / implants"
-            value={formatList(card.chronic_conditions)}
-            changedAt={card.chronic_conditions_changed_at}
+            value={formatList(
+              card.chronic_conditions,
+              card.disclosure_states?.chronic_conditions === "pin_required",
+            )}
           />
         </section>
+
+        {pinGate}
 
         {card.emergency_contacts === null ? (
           <CardField label="Emergency contacts" value="Withheld by patient" />
@@ -225,7 +258,10 @@ export function EmergencyCardContent({
             </h2>
             <ul role="list" className="mt-2 flex flex-col gap-3">
               {card.emergency_contacts.map((contact) => {
-                const href = phoneHref(contact.phone);
+                const links = contactLinks(
+                  contact.phone,
+                  card.name ?? "the patient",
+                );
                 return (
                   <li
                     key={`${contact.name}-${contact.phone}`}
@@ -235,13 +271,35 @@ export function EmergencyCardContent({
                     <p className="text-sm text-zinc-600 dark:text-zinc-400">
                       {contact.relationship}
                     </p>
-                    {href ? (
-                      <a
-                        href={href}
-                        className="text-sm font-medium text-blue-700 underline dark:text-blue-400"
-                      >
-                        {contact.phone}
-                      </a>
+                    <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                      {contact.phone}
+                    </p>
+                    {links ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <a
+                          href={links.tel}
+                          aria-label={`Call ${contact.name}`}
+                          className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-full bg-zinc-950 px-4 text-sm font-medium text-white underline-offset-2 hover:underline focus:ring-2 focus:ring-zinc-400 focus:ring-offset-0 focus:outline-none dark:bg-zinc-50 dark:text-zinc-950 dark:focus:ring-zinc-600"
+                        >
+                          Call
+                        </a>
+                        <a
+                          href={links.sms}
+                          aria-label={`Text ${contact.name}`}
+                          className={actionButtonClassName}
+                        >
+                          Text
+                        </a>
+                        <a
+                          href={links.whatsapp}
+                          aria-label={`WhatsApp ${contact.name}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={actionButtonClassName}
+                        >
+                          WhatsApp
+                        </a>
+                      </div>
                     ) : (
                       <p className="text-sm">{contact.phone}</p>
                     )}
@@ -254,7 +312,21 @@ export function EmergencyCardContent({
           <CardField label="Emergency contacts" value="None recorded" />
         )}
 
-        <OfflineEnvelopeSource card={card} />
+        {capabilityToken && card.emergency_contacts?.length ? (
+          <NotifyContactsForm token={capabilityToken} />
+        ) : null}
+
+        {card.language ? (
+          <CardField label="Language spoken" value={card.language} />
+        ) : null}
+        <p
+          role="note"
+          className="mt-4 text-xs text-zinc-500 dark:text-zinc-500"
+        >
+          Lafiya is pre-alpha software on the Stellar testnet, not yet audited,
+          and not a medical device. Not a substitute for professional medical
+          judgment.
+        </p>
       </main>
     </>
   );
